@@ -34,6 +34,7 @@ type SpendWiseConfig struct {
 	BotUrl     string
 	APISecret  string
 	Port       string
+	UserNames  map[string]string // chatID -> userName mapping
 }
 
 // ---- Data Models ----
@@ -219,13 +220,24 @@ func handleMessage(msg *tgbotapi.Message) {
 	case strings.HasPrefix(text, "/reminders"):
 		handleRemindersCommand(msg)
 	default:
-		// Try to parse as expense if it contains amount
-		if strings.Contains(text, "$") || strings.Contains(text, "€") || strings.Contains(text, "£") {
+		// Try to parse as expense - check if it contains numbers (no currency symbols needed)
+		if containsNumber(text) {
 			handleQuickExpense(msg)
 		} else {
 			handleUnknownCommand(msg)
 		}
 	}
+}
+
+// containsNumber checks if text contains any numeric values
+func containsNumber(text string) bool {
+	parts := strings.Fields(text)
+	for _, part := range parts {
+		if _, err := strconv.ParseFloat(part, 64); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func handleStartCommand(msg *tgbotapi.Message) {
@@ -234,8 +246,10 @@ func handleStartCommand(msg *tgbotapi.Message) {
 		"/help - Show this help message\n" +
 		"/expense - Add a new expense\n" +
 		"/reminders - View your reminders\n\n" +
-		"You can also quickly add expenses by typing: amount description\n" +
-		"Example: $25 Coffee and breakfast"
+		"Quick expense formats:\n" +
+		"• description amount (Coffee Tea 5.50)\n" +
+		"• amount description (5.50 Coffee Tea)\n" +
+		"• Batch: multiple lines supported"
 	
 	reply := tgbotapi.NewMessage(msg.Chat.ID, response)
 	if _, err := bot.Send(reply); err != nil {
@@ -249,9 +263,16 @@ func handleHelpCommand(msg *tgbotapi.Message) {
 		"• /start - Welcome message\n" +
 		"• /expense - Add a new expense\n" +
 		"• /reminders - View your reminders\n\n" +
-		"Quick expense format:\n" +
-		"$amount description\n" +
-		"Example: $15.50 Lunch at cafe"
+		"Expense formats (both work):\n" +
+		"• description amount\n" +
+		"• amount description\n\n" +
+		"Examples:\n" +
+		"Coffee Tea 15.50\n" +
+		"25 Lunch at restaurant\n\n" +
+		"Batch example:\n" +
+		"Coffee 5.50\n" +
+		"12.25 Lunch\n" +
+		"Gas bill 45"
 	
 	reply := tgbotapi.NewMessage(msg.Chat.ID, response)
 	if _, err := bot.Send(reply); err != nil {
@@ -260,12 +281,18 @@ func handleHelpCommand(msg *tgbotapi.Message) {
 }
 
 func handleExpenseCommand(msg *tgbotapi.Message) {
-	response := "To add an expense, use the format:\n" +
-		"$amount description\n\n" +
+	response := "To add expenses, use either format:\n\n" +
+		"Format 1: description amount\n" +
+		"Format 2: amount description\n\n" +
 		"Examples:\n" +
-		"• $25.99 Groceries\n" +
-		"• $12 Coffee\n" +
-		"• $150 Gas bill"
+		"• Coffee Tea 5.50\n" +
+		"• 25.99 Groceries\n" +
+		"• Gas bill 150\n" +
+		"• 12 Lunch\n\n" +
+		"Batch example:\n" +
+		"Coffee 5.50\n" +
+		"12 Lunch\n" +
+		"Gas bill 45.75"
 	
 	reply := tgbotapi.NewMessage(msg.Chat.ID, response)
 	if _, err := bot.Send(reply); err != nil {
@@ -317,27 +344,9 @@ func handleRemindersCommand(msg *tgbotapi.Message) {
 func handleQuickExpense(msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	
-	// Parse amount and description
-	amount, description, err := parseExpenseText(text)
+	// Parse expenses (single or batch)
+	expenses, err := parseExpenses(text, msg)
 	if err != nil {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Invalid format. Use: $amount description")
-		if _, sendErr := bot.Send(reply); sendErr != nil {
-			log.Printf(ErrorSendMessage, sendErr)
-		}
-		return
-	}
-	
-	expense := ExpenseInput{
-		Description:    description,
-		Amount:         amount,
-		Date:           time.Now().Format("2006-01-02"),
-		Source:         "telegram",
-		UserName:       msg.From.FirstName + " " + msg.From.LastName,
-		TelegramChatID: strconv.FormatInt(msg.Chat.ID, 10),
-	}
-	
-	// Validate expense input
-	if err := validateExpenseInput(expense); err != nil {
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ "+err.Error())
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Printf(ErrorSendMessage, sendErr)
@@ -345,31 +354,116 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 		return
 	}
 	
-	respBody, err := apiCall("POST", "/api/expenses", expense)
+	// Send to API as array
+	respBody, err := apiCall("POST", "/api/expenses", expenses)
 	if err != nil {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error saving expense: "+err.Error())
+		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error saving expenses: "+err.Error())
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Printf(ErrorSendMessage, sendErr)
 		}
 		return
 	}
 	
-	var resp struct {
+	// Parse API response
+	var apiResp struct {
+		Success bool   `json:"success"`
 		Message string `json:"message"`
-		ID      string `json:"id"`
+		Error   string `json:"error"`
+		Details string `json:"details"`
 	}
 	
-	if err := json.Unmarshal(respBody, &resp); err == nil && resp.Message != "" {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "✅ "+resp.Message)
-		if _, err := bot.Send(reply); err != nil {
-			log.Printf(ErrorSendSuccess, err)
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error parsing API response")
+		if _, sendErr := bot.Send(reply); sendErr != nil {
+			log.Printf(ErrorSendMessage, sendErr)
+		}
+		return
+	}
+	
+	// Send success or error message based on API response
+	var successMsg string
+	if apiResp.Success {
+		if apiResp.Message != "" {
+			successMsg = "✅ " + apiResp.Message
+		} else if len(expenses) == 1 {
+			successMsg = fmt.Sprintf("✅ Expense saved: %.2f for %s", expenses[0].Amount, expenses[0].Description)
+		} else {
+			successMsg = fmt.Sprintf("✅ %d expenses saved successfully", len(expenses))
 		}
 	} else {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("✅ Expense saved: $%.2f for %s", amount, description))
-		if _, err := bot.Send(reply); err != nil {
-			log.Printf(ErrorSendSuccess, err)
+		errorMsg := "❌ API Error"
+		if apiResp.Error != "" {
+			errorMsg = "❌ " + apiResp.Error
 		}
+		if apiResp.Details != "" {
+			errorMsg += "\nDetails: " + apiResp.Details
+		}
+		successMsg = errorMsg
 	}
+	
+	reply := tgbotapi.NewMessage(msg.Chat.ID, successMsg)
+	if _, err := bot.Send(reply); err != nil {
+		log.Printf(ErrorSendSuccess, err)
+	}
+}
+
+func parseExpenses(text string, msg *tgbotapi.Message) ([]ExpenseInput, error) {
+	lines := strings.Split(text, "\n")
+	var expenses []ExpenseInput
+	
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue // Skip empty lines
+		}
+		
+		amount, description, err := parseExpenseText(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %s", i+1, err.Error())
+		}
+		
+	expense := ExpenseInput{
+		Description:    description,
+		Amount:         amount,
+		Date:           time.Now().Format("2006-01-02"),
+		Source:         "bot",
+		UserName:       getUserName(msg),
+		TelegramChatID: strconv.FormatInt(msg.Chat.ID, 10),
+	}		if err := validateExpenseInput(expense); err != nil {
+			return nil, fmt.Errorf("line %d: %s", i+1, err.Error())
+		}
+		
+		expenses = append(expenses, expense)
+	}
+	
+	if len(expenses) == 0 {
+		return nil, fmt.Errorf("no valid expenses found")
+	}
+	
+	return expenses, nil
+}
+
+// getUserName gets the username for a chat ID from config or fallback to Telegram name
+func getUserName(msg *tgbotapi.Message) string {
+	chatID := strconv.FormatInt(msg.Chat.ID, 10)
+	
+	// Check if we have a configured username for this chat ID
+	if userName, exists := config.UserNames[chatID]; exists && userName != "" {
+		return userName
+	}
+	
+	// Fallback to Telegram username or first/last name
+	if msg.From.UserName != "" {
+		return msg.From.UserName
+	}
+	
+	name := strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)
+	if name != "" {
+		return name
+	}
+	
+	// Last resort
+	return "User_" + chatID
 }
 
 func handleUnknownCommand(msg *tgbotapi.Message) {
@@ -381,38 +475,42 @@ func handleUnknownCommand(msg *tgbotapi.Message) {
 }
 
 func parseExpenseText(text string) (float64, string, error) {
-	// Remove currency symbols and find amount
-	text = strings.ReplaceAll(text, "$", " ")
-	text = strings.ReplaceAll(text, "€", " ")
-	text = strings.ReplaceAll(text, "£", " ")
+	// Clean up text (no currency symbols needed)
+	text = strings.TrimSpace(text)
 	
 	parts := strings.Fields(text)
 	if len(parts) < 2 {
-		return 0, "", fmt.Errorf("invalid format")
+		return 0, "", fmt.Errorf("invalid format - need description and amount")
 	}
 	
-	var amount float64
-	var description string
-	var err error
+	var amounts []float64
+	var descriptionParts []string
 	
-	// Try to find the amount in the first few parts
-	for i, part := range parts {
-		if amount, err = strconv.ParseFloat(part, 64); err == nil {
-			// Found amount, rest is description
-			remaining := parts[i+1:]
-			if len(remaining) == 0 {
-				return 0, "", fmt.Errorf("missing description")
-			}
-			description = strings.Join(remaining, " ")
-			break
+	// Separate amounts from description
+	for _, part := range parts {
+		if amount, err := strconv.ParseFloat(part, 64); err == nil && amount > 0 {
+			amounts = append(amounts, amount)
+		} else {
+			descriptionParts = append(descriptionParts, part)
 		}
 	}
 	
-	if amount <= 0 {
-		return 0, "", fmt.Errorf("invalid amount")
+	if len(amounts) == 0 {
+		return 0, "", fmt.Errorf("no valid amount found")
 	}
 	
-	return amount, description, nil
+	if len(descriptionParts) == 0 {
+		return 0, "", fmt.Errorf("missing description")
+	}
+	
+	// Sum all amounts
+	var totalAmount float64
+	for _, amount := range amounts {
+		totalAmount += amount
+	}
+	
+	description := strings.Join(descriptionParts, " ")
+	return totalAmount, description, nil
 }
 
 // validateExpenseInput validates expense input data
@@ -466,6 +564,23 @@ func loadConfig() SpendWiseConfig {
 		}
 	}
 	
+	// Parse username mappings: "chatID1:username1,chatID2:username2"
+	userNamesStr := os.Getenv("USER_NAMES")
+	userNames := make(map[string]string)
+	if userNamesStr != "" {
+		mappings := strings.Split(userNamesStr, ",")
+		for _, mapping := range mappings {
+			parts := strings.Split(mapping, ":")
+			if len(parts) == 2 {
+				chatID := strings.TrimSpace(parts[0])
+				userName := strings.TrimSpace(parts[1])
+				if chatID != "" && userName != "" {
+					userNames[chatID] = userName
+				}
+			}
+		}
+	}
+	
 	return SpendWiseConfig{
 		BotToken:   botToken,
 		AllowedIDs: allowedIDs,
@@ -473,6 +588,7 @@ func loadConfig() SpendWiseConfig {
 		BotUrl:     botUrl,
 		APISecret:  apiSecret,
 		Port:       port,
+		UserNames:  userNames,
 	}
 }
 
@@ -513,6 +629,20 @@ func apiCall(method, endpoint string, body interface{}) ([]byte, error) {
 	}
 	
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Try to parse error response for better error messages
+		var errorResp struct {
+			Error   string `json:"error"`
+			Details string `json:"details"`
+		}
+		
+		if json.Unmarshal(respBody, &errorResp) == nil && errorResp.Error != "" {
+			errorMsg := errorResp.Error
+			if errorResp.Details != "" {
+				errorMsg += ": " + errorResp.Details
+			}
+			return nil, fmt.Errorf(errorMsg)
+		}
+		
 		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 	
