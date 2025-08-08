@@ -38,6 +38,17 @@ type SpendWiseConfig struct {
 	UserNames  map[string]string // chatID -> userName mapping
 }
 
+// SecretConfig represents the JSON structure in Google Cloud Secret Manager
+type SecretConfig struct {
+	BotToken   string            `json:"botToken"`
+	AllowedIDs []string          `json:"allowedIds"`
+	APIUrl     string            `json:"apiUrl"`
+	BotUrl     string            `json:"botUrl"`
+	APISecret  string            `json:"apiSecret"`
+	Port       string            `json:"port"`
+	UserNames  map[string]string `json:"userNames"`
+}
+
 // ---- Data Models ----
 type Reminder struct {
 	ID        string `json:"id"`
@@ -839,8 +850,71 @@ func validateExpenseInput(input ExpenseInput) error {
 	return nil
 }
 
-// loadConfig loads configuration from environment variables
+// loadConfig loads configuration from JSON env var or individual environment variables
 func loadConfig() SpendWiseConfig {
+	// Option 1: Try JSON in environment variable
+	configJSON := os.Getenv("CONFIG_JSON")
+	if configJSON != "" {
+		log.Println("📋 Using JSON configuration from CONFIG_JSON environment variable")
+		var secretConfig SecretConfig
+		if err := json.Unmarshal([]byte(configJSON), &secretConfig); err != nil {
+			log.Printf("❌ Failed to parse CONFIG_JSON: %v", err)
+			log.Println("⚠️ Falling back to individual environment variables")
+		} else {
+			log.Println("✅ Configuration loaded from CONFIG_JSON environment variable")
+			return convertSecretConfigToSpendWiseConfig(&secretConfig)
+		}
+	}
+
+	// Option 2: Fallback to individual environment variables
+	log.Println("🔧 Loading configuration from individual environment variables")
+	return loadConfigFromEnvVars()
+}
+
+// convertSecretConfigToSpendWiseConfig converts SecretConfig to SpendWiseConfig
+func convertSecretConfigToSpendWiseConfig(secretConfig *SecretConfig) SpendWiseConfig {
+	// Convert SecretConfig to SpendWiseConfig
+	allowedIDs := make(map[string]bool)
+	for _, id := range secretConfig.AllowedIDs {
+		allowedIDs[strings.TrimSpace(id)] = true
+	}
+
+	// Set defaults if not provided in secret
+	apiUrl := secretConfig.APIUrl
+	if apiUrl == "" {
+		apiUrl = DefaultAPIURL
+	}
+
+	port := secretConfig.Port
+	if port == "" {
+		port = DefaultPort
+	}
+
+	// Validate required fields
+	if secretConfig.BotToken == "" {
+		log.Fatal("botToken is required in configuration")
+	}
+	if secretConfig.BotUrl == "" {
+		log.Fatal("botUrl is required in configuration")
+	}
+	if secretConfig.APISecret == "" {
+		log.Fatal("apiSecret is required in configuration")
+	}
+
+	log.Println("✅ Configuration loaded successfully")
+	return SpendWiseConfig{
+		BotToken:   secretConfig.BotToken,
+		AllowedIDs: allowedIDs,
+		APIUrl:     apiUrl,
+		BotUrl:     secretConfig.BotUrl,
+		APISecret:  secretConfig.APISecret,
+		Port:       port,
+		UserNames:  secretConfig.UserNames,
+	}
+}
+
+// loadConfigFromEnvVars loads configuration from individual environment variables
+func loadConfigFromEnvVars() SpendWiseConfig {
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found or error loading .env file:", err)
@@ -898,6 +972,7 @@ func loadConfig() SpendWiseConfig {
 		}
 	}
 
+	log.Println("✅ Configuration loaded from environment variables")
 	return SpendWiseConfig{
 		BotToken:   botToken,
 		AllowedIDs: allowedIDs,

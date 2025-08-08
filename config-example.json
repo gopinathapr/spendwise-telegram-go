@@ -1,0 +1,12 @@
+{
+  "botToken": "your_telegram_bot_token_here",
+  "allowedIds": ["chat_id_1", "chat_id_2", "chat_id_3"],
+  "apiUrl": "https://your-api-server.com",
+  "botUrl": "https://your-bot-domain.com",
+  "apiSecret": "your_api_secret_here",
+  "port": "8080",
+  "userNames": {
+    "chat_id_1": "username1",
+    "chat_id_2": "username2"
+  }
+}

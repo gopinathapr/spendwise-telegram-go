@@ -115,18 +115,104 @@ grok http 8080
 export BOT_URL="https://abc123.ngrok.io"
 ```
 
-## 📋 Environment Variables
+## 📋 Configuration
 
-### Required Variables
+The bot supports two configuration methods (tried in this order):
+
+### � Option 1: JSON Environment Variable (Recommended for Cloud Run)
+
+Set a single environment variable:
+- `CONFIG_JSON` - JSON string containing all configuration
+
+Example:
+```bash
+CONFIG_JSON='{"botToken":"your_bot_token","allowedIds":["123456"],"apiUrl":"https://api.example.com","botUrl":"https://bot.example.com","apiSecret":"secret123","port":"8080","userNames":{"123456":"username"}}'
+```
+
+**Pros:** ✅ Single variable, works well with Cloud Run, easy to manage
+**Cons:** ⚠️ Visible in console (but same as individual env vars)
+
+### 🌍 Option 2: Individual Environment Variables (Development Fallback)
+
+If `CONFIG_JSON` is not set, falls back to individual environment variables.
+
+**Pros:** 🔧 Simple for development, easy to override individual values
+**Cons:** 📝 Many variables to manage
+
+---
+
+### JSON Configuration Structure
+
+For CONFIG_JSON, use this structure:
+
+```json
+{
+  "botToken": "your_telegram_bot_token_here",
+  "allowedIds": ["chat_id_1", "chat_id_2", "chat_id_3"],
+  "apiUrl": "https://your-api-server.com",
+  "botUrl": "https://your-bot-domain.com",
+  "apiSecret": "your_api_secret_here",
+  "port": "8080",
+  "userNames": {
+    "chat_id_1": "username1",
+    "chat_id_2": "username2"
+  }
+}
+```
+
+See `config-example.json` for a complete example.
+
+### Individual Environment Variables
+
+#### Required Variables
 - `BOT_TOKEN` - Telegram bot token from BotFather
 - `BOT_URL` - Public URL where the bot is hosted (for webhooks)
 - `API_SECRET` - Secret for API authentication
 - `ALLOWED_IDS` - Comma-separated list of allowed Telegram chat IDs
 
-### Optional Variables
+#### Optional Variables
 - `API_URL` - Backend API URL (default: `http://localhost:3000`)
 - `PORT` - Server port (default: `8080`)
 - `USER_NAMES` - Username mappings: `"chatID1:username1,chatID2:username2"`
+
+## 🚀 Google Cloud Run Deployment
+
+### Using CONFIG_JSON (Recommended)
+
+```bash
+# Build the JSON config (escape quotes for bash)
+CONFIG_JSON='{
+  "botToken": "your_bot_token_here",
+  "allowedIds": ["123456789"],
+  "apiUrl": "https://your-api.com",
+  "botUrl": "https://your-bot-domain.com",
+  "apiSecret": "your_secret_here",
+  "port": "8080",
+  "userNames": {"123456789": "username"}
+}'
+
+# Deploy to Cloud Run with JSON config
+gcloud run deploy spendwise-bot \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "CONFIG_JSON=${CONFIG_JSON}"
+```
+
+### Using Individual Environment Variables (Alternative)
+
+```bash
+gcloud run deploy spendwise-bot \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars BOT_TOKEN=your_token \
+  --set-env-vars BOT_URL=https://your-domain.com \
+  --set-env-vars API_SECRET=your_secret \
+  --set-env-vars ALLOWED_IDS=123456,789012 \
+  --set-env-vars API_URL=https://your-api.com
 
 ## 🔌 API Integration
 
