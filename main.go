@@ -381,16 +381,45 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 	}
 	
 	// Send success or error message based on API response
-	var successMsg string
 	if apiResp.Success {
-		if apiResp.Message != "" {
-			successMsg = "✅ " + apiResp.Message
-		} else if len(expenses) == 1 {
-			successMsg = fmt.Sprintf("✅ Expense saved: %.2f for %s", expenses[0].Amount, expenses[0].Description)
+		if len(expenses) == 1 {
+			// Single expense - react with thumbs up emoji
+			reactionConfig := tgbotapi.SetMessageReactionConfig{
+				BaseChatMessage: tgbotapi.BaseChatMessage{
+					ChatID:    msg.Chat.ID,
+					MessageID: msg.MessageID,
+				},
+				Reaction: []tgbotapi.ReactionType{
+					{
+						Type: "emoji",
+						Emoji: "👍",
+					},
+				},
+			}
+			if _, err := bot.Request(reactionConfig); err != nil {
+				log.Printf("Failed to react to message: %v", err)
+				// Fallback to text message if reaction fails
+				reply := tgbotapi.NewMessage(msg.Chat.ID, "✅")
+				if _, fallbackErr := bot.Send(reply); fallbackErr != nil {
+					log.Printf(ErrorSendSuccess, fallbackErr)
+				}
+			}
 		} else {
-			successMsg = fmt.Sprintf("✅ %d expenses saved successfully", len(expenses))
+			// Multiple expenses - send text reply
+			var successMsg string
+			if apiResp.Message != "" {
+				successMsg = "✅ " + apiResp.Message
+			} else {
+				successMsg = fmt.Sprintf("✅ %d expenses saved successfully", len(expenses))
+			}
+			
+			reply := tgbotapi.NewMessage(msg.Chat.ID, successMsg)
+			if _, err := bot.Send(reply); err != nil {
+				log.Printf(ErrorSendSuccess, err)
+			}
 		}
 	} else {
+		// Error response - always send text message
 		errorMsg := "❌ API Error"
 		if apiResp.Error != "" {
 			errorMsg = "❌ " + apiResp.Error
@@ -398,12 +427,11 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 		if apiResp.Details != "" {
 			errorMsg += "\nDetails: " + apiResp.Details
 		}
-		successMsg = errorMsg
-	}
-	
-	reply := tgbotapi.NewMessage(msg.Chat.ID, successMsg)
-	if _, err := bot.Send(reply); err != nil {
-		log.Printf(ErrorSendSuccess, err)
+		
+		reply := tgbotapi.NewMessage(msg.Chat.ID, errorMsg)
+		if _, err := bot.Send(reply); err != nil {
+			log.Printf(ErrorSendMessage, err)
+		}
 	}
 }
 
