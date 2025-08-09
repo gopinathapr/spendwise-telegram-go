@@ -91,6 +91,18 @@ type SummaryResponse struct {
 var config SpendWiseConfig
 var bot *tgbotapi.BotAPI
 
+// setupWebhook registers the webhook with Telegram
+func setupWebhook() {
+	webhookURL := config.BotUrl + "/webhook"
+	log.Printf("🔗 Setting webhook to: %s", webhookURL)
+	webhookConfig, _ := tgbotapi.NewWebhook(webhookURL)
+	_, err := bot.Request(webhookConfig)
+	if err != nil {
+		log.Fatalf("❌ Failed to set webhook: %v", err)
+	}
+	log.Printf("✅ Webhook set successfully to: %s", webhookURL)
+}
+
 func main() {
 	log.Println("🚀 Starting SpendWise Telegram Bot")
 
@@ -105,15 +117,8 @@ func main() {
 	bot.Debug = false
 	log.Println("✅ Bot initialized successfully")
 
-	// Set Telegram webhook
-	webhookURL := config.BotUrl + "/webhook"
-	log.Printf("🔗 Setting webhook to: %s", webhookURL)
-	webhookConfig, _ := tgbotapi.NewWebhook(webhookURL)
-	_, err = bot.Request(webhookConfig)
-	if err != nil {
-		log.Fatalf("❌ Failed to set webhook: %v", err)
-	}
-	log.Printf("✅ Webhook set successfully to: %s", webhookURL)
+	// Setup webhook (uncomment to enable webhook mode)
+	// setupWebhook()
 
 	r := gin.Default()
 
@@ -220,9 +225,16 @@ func handleUpdate(update tgbotapi.Update) {
 }
 
 func handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
+	startTime := time.Now()
 	chatID := cb.Message.Chat.ID
 	log.Printf("🔘 Processing callback query - ChatID: %d, Data: %s, UserID: %d",
 		chatID, cb.Data, cb.From.ID)
+
+	defer func() {
+		duration := time.Since(startTime)
+		log.Printf("⏱️ Callback query processing completed in %d ms (%.3f seconds) - ChatID: %d",
+			duration.Milliseconds(), duration.Seconds(), chatID)
+	}()
 
 	if !config.AllowedIDs[strconv.FormatInt(chatID, 10)] {
 		log.Printf("❌ Unauthorized callback query from ChatID: %d, UserID: %d", chatID, cb.From.ID)
@@ -258,7 +270,15 @@ func handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
 		"userId":       userID,
 	}
 
-	respBody, err := apiCall("POST", "/api/reminders/mark-as-done", body)
+	// Use the timing-aware API call
+	result, err := apiCallWithTiming("POST", "/api/reminders/mark-as-done", body)
+	totalDuration := time.Since(startTime)
+
+	// Single consolidated timing log
+	overheadMs := totalDuration.Milliseconds() - result.APITime.Milliseconds()
+	log.Printf("📝⏱️ MARK_DONE TIMING: Total=%dms | API=%dms | Overhead=%dms",
+		totalDuration.Milliseconds(), result.APITime.Milliseconds(), overheadMs)
+
 	if err != nil {
 		log.Printf("❌ Failed to mark reminder as done - ID: %s, Error: %v", reminderID, err)
 		if _, sendErr := bot.Send(tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "❌ Error: "+err.Error())); sendErr != nil {
@@ -270,7 +290,7 @@ func handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
 	var resp struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(respBody, &resp); err != nil || resp.Message == "" {
+	if err := json.Unmarshal(result.Data, &resp); err != nil || resp.Message == "" {
 		log.Printf("✅ Reminder marked as done (default message) - ID: %s", reminderID)
 		if _, sendErr := bot.Send(tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "✅ Marked as done.")); sendErr != nil {
 			log.Printf(ErrorSendSuccess, sendErr)
@@ -419,13 +439,15 @@ func handleRemindersCommand(msg *tgbotapi.Message) {
 	startTime := time.Now()
 	log.Printf("🔔 Starting reminders command processing")
 
-	defer func() {
-		duration := time.Since(startTime)
-		log.Printf("⏱️ Reminders command completed in %d ms (%.3f seconds)",
-			duration.Milliseconds(), duration.Seconds())
-	}()
+	// Use the timing-aware API call
+	result, err := apiCallWithTiming("GET", "/api/reminders/get-payload", nil)
+	totalDuration := time.Since(startTime)
 
-	respBody, err := apiCall("GET", "/api/reminders/get-payload", nil)
+	// Single consolidated timing log
+	overheadMs := totalDuration.Milliseconds() - result.APITime.Milliseconds()
+	log.Printf("🔔⏱️ REMINDERS TIMING: Total=%dms | API=%dms | Overhead=%dms",
+		totalDuration.Milliseconds(), result.APITime.Milliseconds(), overheadMs)
+
 	if err != nil {
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error fetching reminders: "+err.Error())
 		if _, sendErr := bot.Send(reply); sendErr != nil {
@@ -435,7 +457,7 @@ func handleRemindersCommand(msg *tgbotapi.Message) {
 	}
 
 	var payload NotificationPayload
-	if err := json.Unmarshal(respBody, &payload); err != nil {
+	if err := json.Unmarshal(result.Data, &payload); err != nil {
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error parsing reminders")
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Printf(ErrorSendMessage, sendErr)
@@ -520,13 +542,15 @@ func handleSummaryCommand(msg *tgbotapi.Message) {
 	startTime := time.Now()
 	log.Printf("📊 Starting daily summary command processing")
 
-	defer func() {
-		duration := time.Since(startTime)
-		log.Printf("⏱️ Daily summary command completed in %d ms (%.3f seconds)",
-			duration.Milliseconds(), duration.Seconds())
-	}()
+	// Use the timing-aware API call
+	result, err := apiCallWithTiming("GET", "/api/summary/today", nil)
+	totalDuration := time.Since(startTime)
 
-	respBody, err := apiCall("GET", "/api/summary/today", nil)
+	// Single consolidated timing log
+	overheadMs := totalDuration.Milliseconds() - result.APITime.Milliseconds()
+	log.Printf("📊⏱️ SUMMARY TIMING: Total=%dms | API=%dms | Overhead=%dms",
+		totalDuration.Milliseconds(), result.APITime.Milliseconds(), overheadMs)
+
 	if err != nil {
 		errorMsg := fmt.Sprintf("Sorry, I couldn't fetch your daily summary: %s", err.Error())
 		reply := tgbotapi.NewMessage(msg.Chat.ID, errorMsg)
@@ -537,7 +561,7 @@ func handleSummaryCommand(msg *tgbotapi.Message) {
 	}
 
 	var summaryResp SummaryResponse
-	if err := json.Unmarshal(respBody, &summaryResp); err != nil {
+	if err := json.Unmarshal(result.Data, &summaryResp); err != nil {
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error parsing daily summary response")
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Printf(ErrorSendMessage, sendErr)
@@ -559,13 +583,15 @@ func handleMonthCommand(msg *tgbotapi.Message) {
 	startTime := time.Now()
 	log.Printf("📈 Starting monthly summary command processing")
 
-	defer func() {
-		duration := time.Since(startTime)
-		log.Printf("⏱️ Monthly summary command completed in %d ms (%.3f seconds)",
-			duration.Milliseconds(), duration.Seconds())
-	}()
+	// Use the timing-aware API call
+	result, err := apiCallWithTiming("GET", "/api/summary/month", nil)
+	totalDuration := time.Since(startTime)
 
-	respBody, err := apiCall("GET", "/api/summary/month", nil)
+	// Single consolidated timing log
+	overheadMs := totalDuration.Milliseconds() - result.APITime.Milliseconds()
+	log.Printf("📈⏱️ MONTH TIMING: Total=%dms | API=%dms | Overhead=%dms",
+		totalDuration.Milliseconds(), result.APITime.Milliseconds(), overheadMs)
+
 	if err != nil {
 		errorMsg := fmt.Sprintf("Sorry, I couldn't fetch your monthly summary: %s", err.Error())
 		reply := tgbotapi.NewMessage(msg.Chat.ID, errorMsg)
@@ -576,7 +602,7 @@ func handleMonthCommand(msg *tgbotapi.Message) {
 	}
 
 	var summaryResp SummaryResponse
-	if err := json.Unmarshal(respBody, &summaryResp); err != nil {
+	if err := json.Unmarshal(result.Data, &summaryResp); err != nil {
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error parsing monthly summary response")
 		if _, sendErr := bot.Send(reply); sendErr != nil {
 			log.Printf(ErrorSendMessage, sendErr)
@@ -599,12 +625,6 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	log.Printf("🚀 Starting expense processing for ChatID: %d, Text: %s", msg.Chat.ID, text)
 
-	defer func() {
-		duration := time.Since(startTime)
-		log.Printf("⏱️ Expense processing completed in %d ms (%.3f seconds) for ChatID: %d",
-			duration.Milliseconds(), duration.Seconds(), msg.Chat.ID)
-	}()
-
 	// Parse expenses (single or batch)
 	expenses, err := parseExpenses(text, msg)
 	if err != nil {
@@ -621,9 +641,15 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 		log.Printf("💰 Expense %d: %s - %.2f", i+1, expense.Description, expense.Amount)
 	}
 
-	// Send to API as array
-	log.Printf("🌐 Sending %d expenses to API for ChatID: %d", len(expenses), msg.Chat.ID)
-	respBody, err := apiCall("POST", "/api/expenses/create-batch-from-bot", expenses)
+	// Use the timing-aware API call
+	result, err := apiCallWithTiming("POST", "/api/expenses/create-batch-from-bot", expenses)
+	totalDuration := time.Since(startTime)
+
+	// Single consolidated timing log
+	overheadMs := totalDuration.Milliseconds() - result.APITime.Milliseconds()
+	log.Printf("💰⏱️ EXPENSE TIMING: Total=%dms | API=%dms | Overhead=%dms",
+		totalDuration.Milliseconds(), result.APITime.Milliseconds(), overheadMs)
+
 	if err != nil {
 		log.Printf("❌ API call failed for ChatID %d: %v", msg.Chat.ID, err)
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error saving expenses: "+err.Error())
@@ -641,7 +667,7 @@ func handleQuickExpense(msg *tgbotapi.Message) {
 		Details string `json:"details"`
 	}
 
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+	if err := json.Unmarshal(result.Data, &apiResp); err != nil {
 		log.Printf("❌ Failed to parse API response for ChatID %d: %v", msg.Chat.ID, err)
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Error parsing API response")
 		if _, sendErr := bot.Send(reply); sendErr != nil {
@@ -984,7 +1010,73 @@ func loadConfigFromEnvVars() SpendWiseConfig {
 	}
 }
 
-// apiCall makes HTTP requests to the SpendWise API
+// TimingResult holds timing information for operations
+type TimingResult struct {
+	APITime time.Duration
+	Data    []byte
+}
+
+// apiCallWithTiming makes HTTP requests to the SpendWise API and returns timing info
+func apiCallWithTiming(method, endpoint string, body interface{}) (TimingResult, error) {
+	startTime := time.Now()
+
+	var reqBody []byte
+	var err error
+
+	if body != nil {
+		reqBody, err = json.Marshal(body)
+		if err != nil {
+			return TimingResult{}, fmt.Errorf("failed to marshal request body: %v", err)
+		}
+	}
+
+	url := config.APIUrl + endpoint
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return TimingResult{}, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(HeaderAPISecret, config.APISecret)
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return TimingResult{}, fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return TimingResult{}, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Try to parse error response for better error messages
+		var errorResp struct {
+			Error   string `json:"error"`
+			Details string `json:"details"`
+		}
+
+		if json.Unmarshal(respBody, &errorResp) == nil && errorResp.Error != "" {
+			errorMsg := errorResp.Error
+			if errorResp.Details != "" {
+				errorMsg += ": " + errorResp.Details
+			}
+			return TimingResult{}, fmt.Errorf("%s", errorMsg)
+		}
+
+		return TimingResult{}, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	apiDuration := time.Since(startTime)
+	return TimingResult{APITime: apiDuration, Data: respBody}, nil
+}
+
+// apiCall makes HTTP requests to the SpendWise API (legacy function for backward compatibility)
 func apiCall(method, endpoint string, body interface{}) ([]byte, error) {
 	startTime := time.Now()
 	log.Printf("🌐 Starting API call: %s %s", method, endpoint)
